@@ -6,6 +6,7 @@ and machine-parseable so chart-making downstream is trivial.
 """
 
 import json
+import os
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -14,20 +15,43 @@ from typing import Any
 import config
 
 
-# Sonnet 4.6 pricing per 1M tokens (USD). Update if Anthropic adjusts.
-PRICE_PER_MTOK = {
-    "input_tokens":                3.00,
-    "output_tokens":              15.00,
-    "cache_creation_input_tokens": 3.75,
-    "cache_read_input_tokens":     0.30,
+# Reference per-1M-token prices (USD) by cloud route. Free routes (local
+# Ollama, Gemini AI Studio free tier) are handled in estimated_cost, not
+# here. Prices drift - update when providers adjust.
+PRICE_PER_MTOK_BY_BACKEND = {
+    # Anthropic Sonnet reference (the "anthropic" route default).
+    "anthropic": {
+        "input_tokens":                3.00,
+        "output_tokens":              15.00,
+        "cache_creation_input_tokens": 3.75,
+        "cache_read_input_tokens":     0.30,
+    },
+    # OpenAI gpt-4o-mini reference (the "openai" route default). Swap in
+    # your provider's numbers when using Groq/OpenRouter/etc.
+    "openai": {
+        "input_tokens":                0.15,
+        "output_tokens":               0.60,
+        "cache_creation_input_tokens": 0.00,
+        "cache_read_input_tokens":     0.075,
+    },
 }
 
 
 def estimated_cost(usage: dict[str, int]) -> float:
     """Dollar estimate from a usage dict returned by judge()."""
+    backend = getattr(config, "JUDGE_BACKEND", "")
+    # Free routes: local Ollama (no Cloud key) and Gemini on the AI Studio
+    # free tier. (If you attach billing to the Gemini project, add a
+    # "gemini" entry to PRICE_PER_MTOK_BY_BACKEND instead.)
+    if backend == "gemini":
+        return 0.0
+    if backend == "ollama" and not os.environ.get("OLLAMA_API_KEY"):
+        return 0.0
+    prices = PRICE_PER_MTOK_BY_BACKEND.get(backend,
+                                           PRICE_PER_MTOK_BY_BACKEND["anthropic"])
     return sum(
         usage.get(k, 0) * price / 1_000_000
-        for k, price in PRICE_PER_MTOK.items()
+        for k, price in prices.items()
     )
 
 

@@ -15,6 +15,8 @@ from judge_common import (
     Decision,
     build_system_prompt,
     enforce_premade_verbatim,
+    pack_frames,
+    packed_caption,
 )
 
 
@@ -40,13 +42,15 @@ def judge(frames: list[bytes]) -> Decision:
     """Given an ordered list of PNG frames of one profile, return a Decision."""
     client = anthropic.Anthropic()
 
-    content = [_image_block(f) for f in frames]
+    # Provider image cap (abliteration.ai: 4/request) - stitch pairs so
+    # a 7-frame capture goes out as 4 images with no content dropped.
+    packed = pack_frames(frames)
+    content = [_image_block(f) for f in packed]
     content.append({
         "type": "text",
-        "text": (
-            f"Above are {len(frames)} screenshots of one Hinge profile, in order "
-            "from top to bottom. Decide whether to like or skip."
-        ),
+        "text": packed_caption(len(frames), len(packed),
+                               "one Hinge profile")
+        + " Decide whether to like or skip.",
     })
 
     response = client.messages.create(

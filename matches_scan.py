@@ -40,6 +40,7 @@ from dotenv import load_dotenv
 
 import adb
 import config
+from judge_common import pack_frames, packed_caption
 
 load_dotenv()
 
@@ -264,13 +265,14 @@ def extract_matches(frames: list[bytes]) -> ScanResult:
     """Send frames to Claude, return parsed match list."""
     client = anthropic.Anthropic()
 
-    content = [_image_block(f) for f in frames]
+    # Provider image cap is 4/request - pack so --frames 5+ still fits.
+    packed = pack_frames(frames)
+    content = [_image_block(f) for f in packed]
     content.append({
         "type": "text",
-        "text": (
-            f"Above are {len(frames)} screenshots of the Hinge Matches tab, "
-            "in scroll order (top first). Extract everyone visible."
-        ),
+        "text": packed_caption(len(frames), len(packed),
+                               "the Hinge Matches tab")
+        + " Extract everyone visible.",
     })
 
     response = client.messages.create(

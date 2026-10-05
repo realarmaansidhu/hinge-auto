@@ -286,7 +286,11 @@ def enforce_premade_verbatim(decision: Decision) -> None:
 
 
 def load_backend():
-    """Resolve config.JUDGE_BACKEND to a module exposing judge(frames)."""
+    """Resolve config.JUDGE_BACKEND to a module exposing judge(frames).
+
+    "ollama" = local route; "anthropic" / "gemini" / "openai" = cloud
+    routes selected by which key you hold.
+    """
     backend = getattr(config, "JUDGE_BACKEND", "anthropic").lower()
     if backend == "anthropic":
         import judge
@@ -294,6 +298,90 @@ def load_backend():
     if backend == "ollama":
         import judge_ollama
         return judge_ollama
+    if backend == "gemini":
+        import judge_gemini
+        return judge_gemini
+    if backend == "openai":
+        import judge_openai
+        return judge_openai
     raise ValueError(
-        f"Unknown JUDGE_BACKEND={backend!r}. Use 'anthropic' or 'ollama'."
+        "Unknown JUDGE_BACKEND=%r. Use 'ollama' (local) or a cloud route: "
+        "'anthropic', 'gemini' or 'openai'." % (backend,)
     )
+
+
+def pack_frames(frames: list[bytes], max_images: int = 4) -> list[bytes]:
+    """Stitch scroll frames vertically to fit a per-request image cap.
+
+    abliteration.ai accepts at most 4 images per request on both its
+    Anthropic and OpenAI surfaces, but a profile capture is 7 frames.
+    Groups of consecutive frames are stacked top-to-bottom into single
+    PNGs so order is preserved and no content is dropped. Groups are
+    sized as ceil(len(frames) / max_images), so 7 frames -> [2,2,2,1].
+    """
+    import io
+    import math
+
+    from PIL import Image
+
+    if len(frames) <= max_images:
+        return list(frames)
+    per = math.ceil(len(frames) / max_images)
+    packed: list[bytes] = []
+    for i in range(0, len(frames), per):
+        group = frames[i:i + per]
+        if len(group) == 1:
+            packed.append(group[0])
+            continue
+        imgs = [Image.open(io.BytesIO(f)).convert("RGB") for f in group]
+        w = max(im.width for im in imgs)
+        canvas = Image.new("RGB", (w, sum(im.height for im in imgs)))
+        y = 0
+        for im in imgs:
+            canvas.paste(im, (0, y))
+            y += im.height
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        packed.append(buf.getvalue())
+    return packed
+
+
+def packed_caption(n_frames: int, n_images: int, what: str) -> str:
+    """User-text caption matching what pack_frames produced."""
+    if n_images == n_frames:
+        return (
+            f"Above are {n_frames} screenshots of {what}, in order "
+            "from top to bottom."
+        )
+    return (
+        f"Above are {n_images} images containing {n_frames} screenshots "
+        f"of {what}, in order from top to bottom. Some images are "
+        "consecutive screenshots stacked vertically - read each image "
+        "top-to-bottom as one continuous scroll."
+    )
+
+
+def sanitize_message(message: str) -> str:
+    """Make an opener safe for `adb shell input text`.
+
+    Small/local models drift off the voice rubric's plain-ASCII rule
+    (observed: U+2019 curly apostrophe in an opener). The typing layer
+    only reliably sends ASCII, and \\ " $ ` break it, so: fold smart
+    punctuation to ASCII, drop the shell-special chars, delete anything
+    non-ASCII left. Empty string passes through (means "like silently").
+    """
+    import unicodedata
+
+    if not message:
+        return ""
+    folded = (
+        message.replace("\u2019", "'").replace("\u2018", "'")
+        .replace("\u201c", '"').replace("\u201d", '"')
+        .replace("\u2014", "-").replace("\u2013", "-")
+        .replace("\u2026", "...").replace("\u00a0", " ")
+    )
+    ascii_only = unicodedata.normalize("NFKD", folded).encode(
+        "ascii", "ignore").decode("ascii")
+    # `input text` renders %s as a space - spell it out instead.
+    ascii_only = ascii_only.replace("%", " percent ")
+    return "".join(c for c in ascii_only if c not in '\\"$`')

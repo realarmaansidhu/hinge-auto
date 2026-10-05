@@ -130,6 +130,8 @@ def review(frames: list[bytes]) -> str:
     """Send frames to Claude and return the markdown review."""
     import anthropic
 
+    from judge_common import pack_frames, packed_caption
+
     client = anthropic.Anthropic()
 
     def img_block(png: bytes) -> dict:
@@ -142,13 +144,13 @@ def review(frames: list[bytes]) -> str:
             },
         }
 
-    content = [img_block(f) for f in frames]
+    # Same 4-image provider cap as the judge - pack 7 frames into 4.
+    packed = pack_frames(frames)
+    content = [img_block(f) for f in packed]
     content.append({
         "type": "text",
-        "text": (
-            f"Above are {len(frames)} screenshots of my Hinge profile in "
-            "top-to-bottom scroll order. Give me your full coach review."
-        ),
+        "text": packed_caption(len(frames), len(packed), "my Hinge profile")
+        + " Give me your full coach review.",
     })
 
     response = client.messages.create(
