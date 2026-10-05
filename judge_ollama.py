@@ -95,6 +95,18 @@ def _decision_from_args(args: dict, usage: dict) -> Decision:
         merged["decision"] = "skip"
     if merged["confidence"] not in ("low", "medium", "high"):
         merged["confidence"] = "low"
+    # Schema: skip_reason is "none" on likes (small models drift - observed
+    # "other" on a like). On skips, force a known category.
+    if merged["decision"] == "like":
+        merged["skip_reason"] = "none"
+    elif merged["skip_reason"] not in ("age", "preferences", "low_effort",
+                                       "other"):
+        merged["skip_reason"] = "other"
+    if merged["message_archetype"] not in (
+        "empty", "observation_question", "prompt_callback", "photo_callback",
+        "tease", "premade", "other",
+    ):
+        merged["message_archetype"] = "empty" if not merged["message"] else "other"
     return Decision(**merged, usage=usage)
 
 
@@ -122,7 +134,11 @@ def judge(frames: list[bytes]) -> Decision:
         tools=[_tool_spec()],
         # Hint Ollama toward JSON if it falls back to content output
         # instead of a tool call.
-        options={"temperature": 0.2},
+        options={
+            "temperature": 0.2,
+            # 7 full-res screenshots overflow Ollama's default 4K window.
+            "num_ctx": getattr(config, "OLLAMA_NUM_CTX", 32768),
+        },
     )
 
     usage = {

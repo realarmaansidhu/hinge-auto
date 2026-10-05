@@ -57,27 +57,14 @@ def find_send_like(png: bytes) -> tuple[int, int] | None:
     return (cx, cy)
 
 
-def find_first_heart(png: bytes) -> tuple[int, int] | None:
-    """Locate the heart icon on photo 1 (topmost heart in current view).
+def _circular_blobs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """Heart-sized near-circular blob centers from a binary mask.
 
-    Hinge's heart-on-photo widget is a white circle (~126x126, area ~10900)
-    overlaid at the photo's bottom-right corner. Profile layouts vary —
-    some have prompt headers above photo 1 ('Me in the wild'), others
-    don't — so photo 1's heart y position drifts profile-to-profile.
-
-    Strategy: find white near-circular blobs of the right size, return
-    the topmost one (lowest y) since that's photo 1 when scrolled to top.
-
-    Filters tuned to reject clothing false-positives (white dresses, shirts
-    can blob-match by raw size). Real Hinge hearts are always:
-      - right-aligned (x_center > 800) — the icon sits at the photo's
-        bottom-right corner
-      - near-circular (|w-h| < 15) — clothing blobs are elongated
-      - area >= 8500 — clothing fragments tend to be smaller circular
-        regions; the heart's white circle is ~10800-11000 px
+    Shared size/shape/position filters for both button polarities -
+    Hinge renders the photo heart as a white circle on some builds and
+    as a black circle (with a white heart glyph) on others. Returns a
+    list of (cy, cx) centers.
     """
-    arr = _png_to_array(png)
-    mask = (arr[..., 0] > 235) & (arr[..., 1] > 235) & (arr[..., 2] > 235)
     labeled, _ = label(mask)
     hearts = []
     for i, sl in enumerate(find_objects(labeled), 1):
@@ -98,6 +85,88 @@ def find_first_heart(png: bytes) -> tuple[int, int] | None:
             continue
         cy = (y0 + y1) // 2
         hearts.append((cy, cx))
+    return hearts
+
+
+def _glyph_candidates(arr: np.ndarray) -> list[tuple[int, int]]:
+    """White heart-glyph centers - fallback for dark-button-on-dark-photo.
+
+    A black heart button sitting on dark photo content (dark hair,
+    night shots) merges with the background in a brightness mask, so the
+    disc detector above goes blind. The white heart glyph inside the
+    button stays isolated at a strict >235 threshold. Measured across
+    two real screenshots: glyph is 59x55, area ~1160, fill ~0.36
+    (outline shape), with a fully dark r42-58 annulus. The main
+    confusable (video "0:00" timestamps) is far wider and solid-filled,
+    so it fails the size/fill gates. Glyph centroid == tap target: it
+    sits within ~7px of the disc center. Returns (cy, cx) centers.
+    """
+    white = (arr[..., 0] > 235) & (arr[..., 1] > 235) & (arr[..., 2] > 235)
+    labeled, _ = label(white)
+    yy, xx = np.ogrid[: arr.shape[0], : arr.shape[1]]
+    glyphs = []
+    for i, sl in enumerate(find_objects(labeled), 1):
+        if sl is None:
+            continue
+        y0, y1 = sl[0].start, sl[0].stop
+        x0, x1 = sl[1].start, sl[1].stop
+        h, w = y1 - y0, x1 - x0
+        area = (labeled[sl] == i).sum()
+        if not (35 <= w <= 85 and 35 <= h <= 85):
+            continue
+        if not 700 <= area <= 2600:
+            continue
+        if area / (w * h) >= 0.6:
+            continue
+        cx = (x0 + x1) // 2
+        if cx <= 750:
+            continue
+        cy = (y0 + y1) // 2
+        ring = (
+            ((xx - cx) ** 2 + (yy - cy) ** 2 >= 42**2)
+            & ((xx - cx) ** 2 + (yy - cy) ** 2 <= 58**2)
+        )
+        if (arr[ring].mean(axis=1) < 110).mean() < 0.8:
+            continue
+        glyphs.append((cy, cx))
+    return glyphs
+
+
+def find_first_heart(png: bytes) -> tuple[int, int] | None:
+    """Locate the heart icon on photo 1 (topmost heart in current view).
+
+    Hinge's heart-on-photo widget is a white circle (~126x126, area ~10900)
+    overlaid at the photo's bottom-right corner. Profile layouts vary -
+    some have prompt headers above photo 1 ('Me in the wild'), others
+    don't - so photo 1's heart y position drifts profile-to-profile.
+
+    Strategy: find white near-circular blobs of the right size, return
+    the topmost one (lowest y) since that's photo 1 when scrolled to top.
+
+    Both polarities are checked - white-circle buttons (older builds)
+    and black-circle buttons with a white heart glyph (current build).
+    Candidates from both masks are merged and the topmost wins. The
+    glyph inside a black button is far too small to pass the size
+    filter, so it can't self-match. When the black disc merges with dark
+    photo content behind it, the disc masks go blind - then the white
+    heart glyph itself is detected via _glyph_candidates as a fallback
+    (disc results take priority; glyphs are only used when no disc
+    passed the filters).
+
+    Filters tuned to reject clothing false-positives (white dresses, shirts
+    can blob-match by raw size). Real Hinge hearts are always:
+      - right-aligned (x_center > 800) - the icon sits at the photo's
+        bottom-right corner
+      - near-circular (|w-h| < 15) - clothing blobs are elongated
+      - area >= 8500 - clothing fragments tend to be smaller circular
+        regions; the heart's white circle is ~10800-11000 px
+    """
+    arr = _png_to_array(png)
+    white = (arr[..., 0] > 235) & (arr[..., 1] > 235) & (arr[..., 2] > 235)
+    dark = arr.mean(axis=-1) < 80
+    hearts = _circular_blobs(white) + _circular_blobs(dark)
+    if not hearts:
+        hearts = _glyph_candidates(arr)
     if not hearts:
         return None
     hearts.sort()

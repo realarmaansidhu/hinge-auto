@@ -44,9 +44,15 @@ def input_text(text: str) -> None:
     device shell. Caller should keep text plain ASCII — emoji and the chars
     \\ " $ ` should be filtered upstream (the model is instructed to avoid
     them) since `input text` itself only sends keyevents.
+
+    Sends in 12-char chunks with a settle between them: a single burst
+    for a 75-char opener drops characters under host CPU contention
+    (observed live: pixel-density check failed after one-shot typing).
     """
-    quoted = shlex.quote(text)
-    _run(["shell", f"input text {quoted}"])
+    for i in range(0, len(text), 12):
+        quoted = shlex.quote(text[i:i + 12])
+        _run(["shell", f"input text {quoted}"])
+        time.sleep(0.35)
 
 
 def swipe(x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300) -> None:

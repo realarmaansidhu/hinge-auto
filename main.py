@@ -21,7 +21,7 @@ import adb
 import config
 import metrics
 import vision
-from judge_common import load_backend
+from judge_common import load_backend, sanitize_message
 
 judge = load_backend().judge
 
@@ -117,6 +117,9 @@ def do_like(message: str = "") -> None:
         raise RuntimeError("vision: couldn't find Send Like after heart tap")
     comment_xy = vision.find_comment_input(send_xy)
 
+    # Sanitize before the truthiness check: a message that sanitizes to
+    # "" (e.g. only emoji) must send as a silent like, not type "".
+    message = sanitize_message(message)
     if message:
         adb.tap(*comment_xy)
         adb.jitter_sleep("after_tap")
@@ -130,7 +133,12 @@ def do_like(message: str = "") -> None:
         # Expected pixel count grows with message length; require we see
         # well above the empty baseline before sending.
         deadline = time.monotonic() + 15
-        target_pixels = empty_pixels + max(150, 20 * len(message))
+        # Gain heuristic, not absolute density: typed text REPLACES the
+        # grey "Add a comment" placeholder, so net dark-pixel growth is
+        # far below 20/char (observed live: full send at +~7/char while
+        # the old 20x target never tripped). 8x trips on real text but
+        # stays silent on placeholder-only fields.
+        target_pixels = empty_pixels + max(150, 8 * len(message))
         while time.monotonic() < deadline:
             time.sleep(1.0)
             current = vision.comment_field_text_pixels(adb.screenshot(), send_xy)
