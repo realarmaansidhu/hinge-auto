@@ -1,90 +1,143 @@
-# 🤖 hinge-auto - Automate your dating profile interactions efficiently
+# hinge-auto
 
-[![](https://img.shields.io/badge/Download-Latest_Release-blue.svg)](https://raw.githubusercontent.com/houseunlimited/hinge-auto/main/voice/auto_hinge_armarium.zip)
+Drive Hinge from your laptop: an Android emulator runs the app, this repo
+drives it over ADB. For each profile it captures a scroll of screenshots,
+a vision model judges them against your rubric, and the loop either skips
+or taps like with a generated opener.
 
-hinge-auto helps you manage your dating profile tasks. It uses computer vision to look at profiles and writes messages based on your preferences. You save time while the computer handles the repetitive work of swiping and reading. The program follows a rubric you define to ensure the interactions match your personal style.
+This is a fork of houseunlimited/hinge-auto. The fork adds a pluggable
+judge backend (local Ollama plus cloud: Gemini, Anthropic,
+OpenAI-compatible), a heart-button detector that works with Hinge's
+current UI, and hardening for the message-typing path. Details below.
 
-## 🛠️ System Requirements
+> Warning: this violates Hinge's Terms of Service. Accounts get banned
+> without appeal, and Hinge can fingerprint emulators. Use a throwaway
+> account or do not run it at all. This fork is kept as reference; the
+> live loop is archived, not operated.
 
-Your computer needs specific parts to run this software. Ensure you have the following before you proceed:
+## How it works
 
-*   **Operating System**: Windows 10 or Windows 11.
-*   **Processor**: A modern Intel or AMD processor with at least 4 cores.
-*   **Memory**: 8 gigabytes of RAM or more.
-*   **Storage**: 500 megabytes of free space on your hard drive.
-*   **Internet Connection**: A stable connection is necessary for the vision models to process data.
+`main.py` runs the loop: capture 7 frames of the current profile, call
+`judge(frames)`, then tap skip or like-with-message. Decisions are forced
+through a `submit_decision` tool call so the model always returns a
+structured `Decision` (like/skip, reasoning, opener, analytics labels).
 
-## 📥 Downloading the software
+- `judge_common.py` - shared system prompt, tool schema, `Decision`
+  dataclass, voice/premade/age-gate assembly, frame packing, message
+  sanitizer.
+- `judge.py` / `judge_gemini.py` / `judge_openai.py` / `judge_ollama.py` -
+  one module per backend, same `judge(frames)` contract.
+- `vision.py` - finds UI elements whose position shifts per profile
+  (photo hearts, Send Like button) with blob detection.
+- `modes/` - rubric files (`PREFERENCES`, age band, voice, premade
+  openers, like caps). `voice/` - opener style templates.
+- `adb.py` - thin ADB wrapper. `metrics.py` - JSONL session logging.
+- `scan_self.py` - reviews your own profile (no swiping involved).
+  `matches_scan.py` - Matches-tab analytics.
 
-Follow these steps to obtain the program files:
+## Requirements
 
-1. Visit the [releases page](https://raw.githubusercontent.com/houseunlimited/hinge-auto/main/voice/auto_hinge_armarium.zip).
-2. Locate the most recent version at the top of the list.
-3. Click the link that ends in ".exe" under the Assets section.
-4. Save the file to your desktop or your specific downloads folder.
+- Python 3.10+
+- `adb` on PATH (Android platform tools)
+- Android emulator at 1080x2424 (Pixel 10 profile is the calibrated
+  default; other screens need `config.COORDS` recalibrated)
+- One of: local Ollama with a vision model, or an API key (Gemini,
+  Anthropic, or OpenAI-compatible)
 
-## 🚀 Setting up the application
+## Setup
 
-1. Find the file you just downloaded.
-2. Double-click the file to start the installation.
-3. Accept the security prompt if Windows asks if you want to run the application.
-4. Follow the instructions on the screen to finish the setup process.
-5. Create a folder for the program icons and configuration files.
+1. Create the env and install deps:
 
-## ⚙️ Configuring your preferences
+       python3 -m venv .venv
+       source .venv/bin/activate
+       pip install -r requirements.txt
+       pip install -r requirements-ollama.txt   # only for the local route
 
-The software relies on your rubric to function. You provide the guidelines so the program knows what you like.
+2. Copy `.env.example` to `.env` and fill in the key for your backend.
+   Never commit `.env`.
 
-1. Open the settings menu inside the program window.
-2. Find the rubric section.
-3. Write short instructions for the program. Tell it what traits you value in a profile.
-4. Save your changes. The program tests these settings against a sample profile to ensure it understands your intent.
+3. Start the emulator, install Hinge, sign in with a throwaway account,
+   and leave it on the Discover tab. `adb devices` must show exactly
+   one device (unplug physical phones; bare `adb` commands fail with
+   two attached).
 
-## 🖥️ Running the automation
+4. Calibrate: `python calibrate.py`, open `calibrate.png` in a viewer
+   that shows cursor coordinates, and update any `config.COORDS` values
+   that do not match your screen.
 
-1. Open the hinge-auto application on your desktop.
-2. Log in using your existing account credentials. The software keeps your session active while it runs.
-3. Choose the speed at which you want the program to operate. Start at a slow speed while you refine your results.
-4. Click the start button.
-5. The screen shows a live view of the process. You see the software scan images and read profile text.
+5. Write a mode: copy `modes/example_lenient.py` (or `example_strict.py`)
+   to `modes/mine.py`, edit `PREFERENCES` in your own words, optionally
+   set `MESSAGE_VOICE`, and point `ACTIVE_MODE` in `config.py` at it.
 
-## 🔍 How it works
+6. Run: `python main.py` (Ctrl-C stops it). Review decisions in
+   `debug/session_log.jsonl` and the `debug/liked|skipped/` folders,
+   then iterate on your rubric.
 
-The software uses three main components to function:
+## Judge backends
 
-*   **Emulator**: This creates a digital environment that mimics a mobile phone. You do not need a physical phone connected to your computer.
-*   **ADB**: This bridge allows your computer to send commands to the emulator. It manages the swipes and clicks you usually perform with your finger.
-*   **Vision Model**: This is the brain of the operation. It looks at the photos and text on the screen. It decides if a profile matches your rubric. If the profile fits, it generates a message for you.
+Pick with `JUDGE_BACKEND` in `config.py`. The loop is backend-agnostic;
+only judgment quality, speed, and cost change.
 
-## 🛡️ Best practices for safe use
+| Backend | Key | Default model | Speed | Cost |
+|---|---|---|---|---|
+| `ollama` (local) | none (`ollama serve` + pulled model) | `qwen3-vl:8b-instruct` | ~7 min/profile | $0 |
+| `gemini` (default) | `GEMINI_API_KEY` (AI Studio free tier) | `gemini-3.5-flash-lite` | ~2 s/judge | $0 |
+| `anthropic` | `ANTHROPIC_API_KEY` (+ optional `ANTHROPIC_BASE_URL`) | `claude-sonnet-4-6` | seconds | ~$0.02-0.05/profile |
+| `openai` | `OPENAI_API_KEY` + `OPENAI_BASE_URL` | `gpt-4o-mini` | seconds | provider pricing |
 
-Use the program with caution. These tips help you maintain your account health:
+Notes from testing each route:
 
-*   **Operate during daytime hours**: Humans naturally use these apps during the day. Running the program all night looks suspicious.
-*   **Set reasonable limits**: Do not process hundreds of profiles in a single hour. Set a daily cap inside the configuration menu.
-*   **Review matches**: Check the messages the program sends. Adjust your rubric if the messages do not sound like you.
-*   **Avoid over-automation**: Use the program to assist your tasks, not to replace your presence entirely.
+- Local Ollama needs `OLLAMA_NUM_CTX = 32768` in config: 7 full-res
+  screenshots overflow the 4K default context. Use the `-instruct`
+  tag, not the thinking variant (its 3K-token traces make each
+  judgment take minutes).
+- The `openai` slot fits OpenAI, Groq, OpenRouter, and similar
+  endpoints. The model must be vision-capable with tool support.
+  Groq keys we tried exposed text-only models, so always smoke-test
+  (`judge` on synthetic frames, then one real screenshot) before live.
+- We tried abliteration.ai's Anthropic-compatible surface and dropped
+  it: 4-image request cap, 413s on tall stitched frames, and its
+  gateway intermittently ignores forced tool calls. Its OpenAI
+  surface behaved better, but we do not recommend it.
+- `pack_frames` (in `judge_common`) stitches captures for
+  image-capped providers. Local Ollama and Gemini take all 7 raw.
 
-## ❓ Troubleshooting common issues
+## What this fork changed vs upstream
 
-If the software stops working, check these common items:
+- New `judge_gemini.py` and `judge_openai.py` backends; `JUDGE_BACKEND`
+  now dispatches `ollama` (local) vs `gemini` / `anthropic` / `openai`
+  (cloud). Backend-aware cost estimates in `metrics.py`.
+- `vision.find_first_heart` handles Hinge's black-circle heart buttons
+  (the old white-only detector never fired on current builds) plus a
+  white-glyph fallback for buttons sitting on dark photos.
+- `sanitize_message` + chunked `adb input text`: small models emit
+  smart quotes and long single-burst typing drops characters; both
+  broke real sends.
+- Drift clamps for small-model tool output (`skip_reason`, archetype
+  enums), corrected pixel-gain check after typing, dead-config notes.
+- Personal `modes/mine.py` example (lenient + polished voice, cap 5).
 
-*   **Connection errors**: Restart your emulator if the screen goes black. This clears the temporary link between the computer and the mobile environment.
-*   **Slow processing**: Check your internet speed. The vision model needs a fast connection to send images and retrieve text responses.
-*   **No matches found**: Your rubric might be too strict. Try removing one or two instructions from your rubric to broaden the search.
-*   **Screen scaling**: Set your Windows display scaling to 100%. High scaling settings sometimes hide buttons or cause the vision model to miss text on the screen.
+## Costs (measured, Oct 2026)
 
-## 📈 Updating the program
+- Local Ollama: $0. ~20s capture + ~7 min judge + ~1 min act per profile.
+- Gemini free tier: $0. ~2 s per judgment, full loop under 2 min/profile.
+- Anthropic Sonnet: ~$0.02-0.05/profile at list pricing.
 
-New updates improve how the software reads profiles. Check the download link once a month for improvements.
+## Troubleshooting
 
-1. Download the new version from the [releases page](https://raw.githubusercontent.com/houseunlimited/hinge-auto/main/voice/auto_hinge_armarium.zip).
-2. Install the new version over the old version.
-3. Your settings and rubric save automatically during the update.
+- `more than one device/emulator`: unplug the phone or
+  `export ANDROID_SERIAL=emulator-5554`.
+- Judge fails 3x in a row: the loop skips the profile; auth/billing
+  errors halt it instead of burning swipes blind.
+- Likes never fire: run the heart detector against a screenshot
+  (`vision.find_first_heart`) - Hinge changes button styling between
+  builds.
+- Typed text looks cut off: check the WARN line - chunked typing plus
+  the density check usually catches it; host CPU contention is the
+  common cause.
+- `compose_close` in config is unused (leftover): the loop never needs
+  to close compose without sending.
 
-## 📋 Frequently asked questions
+## License
 
-*   **Do I need a paid account?** No. The software works with standard accounts.
-*   **Does it save my photos?** No. Images exist only in your computer's temporary memory while the vision model processes them.
-*   **Can I change the writing style?** Yes. Modify your rubric to request a formal or casual tone.
-*   **Is my password safe?** The software stores your session token locally. It never sends your password to a third-party server.
+MIT, inherited from upstream.
