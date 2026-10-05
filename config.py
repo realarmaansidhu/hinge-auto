@@ -14,7 +14,7 @@ from pathlib import Path
 
 # ---------- Mode selection ----------
 # Which `modes/<name>.py` to load. Overridden per-run by `python main.py --mode X`.
-ACTIVE_MODE = "example_lenient"
+ACTIVE_MODE = "mine"
 
 # These get filled in by _apply_mode() at the bottom of this file. Declared
 # here so static analyzers / IDEs see them. Do not edit by hand — edit the
@@ -116,29 +116,67 @@ DELAYS = {
 }
 
 # ---------- Judge backend ----------
-# "anthropic" -> uses your ANTHROPIC_API_KEY; best quality, ~$0.02-0.05/profile.
-# "ollama"    -> uses Ollama Cloud (free tier) or local Ollama; lower quality
-#                but no per-token cost.
-JUDGE_BACKEND = "anthropic"
+# Two routes:
+#   LOCAL: "ollama"  -> on-laptop, free, private. Needs `ollama serve` +
+#                       a pulled vision model. Slow (~7 min/profile).
+#   CLOUD: one of the below, chosen by which key you hold. All fast
+#          (~seconds/profile). The loop only needs vision + forced tools.
+#     "gemini"     -> AI Studio free tier (GEMINI_API_KEY). DEFAULT.
+#     "anthropic"  -> Claude API (ANTHROPIC_API_KEY). Reference quality.
+#     "openai"     -> generic OpenAI-compatible slot: OpenAI, Groq,
+#                     OpenRouter, ... (OPENAI_API_KEY + OPENAI_BASE_URL).
+# NOTE: we pointed the "anthropic" route at abliteration.ai's compatible
+# surface and dropped it - 4-image cap, tall-stitch 413s, and its gateway
+# intermittently ignores forced tool calls. Any *other* Anthropic-compatible
+# endpoint can still be used via ANTHROPIC_BASE_URL.
+JUDGE_BACKEND = "gemini"
 
 # ---------- Anthropic settings (when JUDGE_BACKEND == "anthropic") ----------
-# Sonnet is the default — cheaper than Opus and plenty capable for this task.
-# Switch to "claude-opus-4-7" if you want top-quality judgment, or
-# "claude-haiku-4-5" for cheapest (may miss subtle cues).
+# Sonnet is the reference default. Point ANTHROPIC_BASE_URL at any
+# Anthropic-compatible endpoint to use a third-party key instead.
 MODEL = "claude-sonnet-4-6"
 EFFORT = "medium"  # low | medium | high
 
 # ---------- Ollama settings (when JUDGE_BACKEND == "ollama") ----------
 # Vision-capable models that handle multiple images per turn:
-#   "qwen2.5-vl"        — strong all-around vision model (recommended)
-#   "qwen2.5-vl:7b"     — smaller, faster, weaker
+#   "qwen3-vl:8b-instruct" - same 8B weights, no thinking trace. ~13s/judgment
+#                         warm on M-series, correct structured output.
+#                         DEFAULT. (Validated 2026-10-04.)
+#   "qwen3-vl:8b"       - thinking variant: correct but ~7 min/judgment
+#                         (3K-trace tokens). Avoid for the loop.
+#   "qwen2.5-vl"        - previous-gen default (7B); fallback if qwen3-vl
+#                         misbehaves on tool calls.
 #   "llama3.2-vision"   — alternative; tool-calling can be flakier
-OLLAMA_MODEL = "qwen2.5-vl"
+OLLAMA_MODEL = "qwen3-vl:8b-instruct"
+
+# 7 full-res screenshots per profile need headroom over Ollama's default
+# 4K context. 32K fits comfortably in 24GB unified memory alongside an 8B
+# model. Lower to 16384 if prefill feels slow.
+OLLAMA_NUM_CTX = 32768
 
 # OLLAMA_HOST: None or "" -> default http://localhost:11434
 #              "https://ollama.com" -> Ollama Cloud (requires OLLAMA_API_KEY)
 # Can also be set via the OLLAMA_HOST environment variable.
 OLLAMA_HOST = None
+
+# ---------- Gemini settings (when JUDGE_BACKEND == "gemini") ----------
+# Needs GEMINI_API_KEY (or GOOGLE_API_KEY) in .env - AI Studio free tier.
+#   "gemini-3.5-flash-lite" - fastest/cheapest multimodal Flash. DEFAULT.
+#   "gemini-3.8-flash"      - most intelligent Flash; use if lite's judgment
+#                             or openers disappoint.
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+# ---------- OpenAI-compatible settings (when JUDGE_BACKEND == "openai") ----------
+# Bring-your-own-cloud-key slot. Point at any OpenAI-dialect endpoint:
+#   OpenAI:            https://api.openai.com/v1  (gpt-4o / gpt-4o-mini)
+#   Groq:              https://api.groq.com/openai/v1
+#   OpenRouter:        https://openrouter.ai/api/v1
+# Key via OPENAI_API_KEY in .env (or OPENAI_BASE_URL env as override).
+# CAUTION: the model MUST be vision-capable with tool support. Groq keys
+# we tested expose text-only models (tool envelope validated, image path
+# not) - always run a judge smoke test before going live (see module docs).
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+OPENAI_MODEL = "gpt-4o-mini"
 
 # ---------- Paths ----------
 BASE_DIR = Path(__file__).parent
